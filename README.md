@@ -517,6 +517,327 @@ hotfix/       ──────────────────────
 | `hotfix/*` | Emergency production fixes |
 
 ---
+# 🪝 Git Hooks — Complete Guide
+
+Git hooks are scripts that run automatically at specific points in the Git workflow (before/after commit, push, merge, etc.). They live in `.git/hooks/` or a shared `hooks/` folder.
+
+---
+
+## 📁 Project Structure
+
+```
+your-project/
+├── hooks/
+│   ├── pre-commit          # Runs before a commit is created
+│   ├── prepare-commit-msg  # Runs before commit message editor opens
+│   ├── commit-msg          # Validates the commit message
+│   ├── post-commit         # Runs after a commit is created
+│   ├── pre-push            # Runs before a push
+│   ├── pre-rebase          # Runs before a rebase
+│   ├── post-merge          # Runs after a merge
+│   ├── post-checkout       # Runs after a checkout
+│   └── install.sh          # Script to install all hooks
+└── README.md
+```
+
+---
+
+## ⚙️ How to Install Hooks
+
+### Option 1 — Manual Symlink (Recommended)
+```bash
+# From your project root
+chmod +x hooks/*
+git config core.hooksPath hooks
+```
+
+### Option 2 — install.sh Script
+```bash
+#!/bin/bash
+# hooks/install.sh
+HOOKS_DIR="$(pwd)/hooks"
+GIT_HOOKS_DIR="$(pwd)/.git/hooks"
+
+for hook in "$HOOKS_DIR"/*; do
+  hook_name=$(basename "$hook")
+  if [ "$hook_name" != "install.sh" ]; then
+    ln -sf "$HOOKS_DIR/$hook_name" "$GIT_HOOKS_DIR/$hook_name"
+    chmod +x "$GIT_HOOKS_DIR/$hook_name"
+    echo "✅ Installed: $hook_name"
+  fi
+done
+echo "All hooks installed!"
+```
+Run it once:
+```bash
+bash hooks/install.sh
+```
+
+---
+
+## 🪝 All Git Hooks — With Examples
+
+---
+
+### 1. `pre-commit` — Lint & Format Before Commit
+Runs before the commit is created. Exit non-zero to abort.
+
+```bash
+#!/bin/bash
+# hooks/pre-commit
+
+echo "🔍 Running pre-commit checks..."
+
+# --- Python: flake8 lint ---
+files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$')
+if [ -n "$files" ]; then
+  echo "🐍 Linting Python files..."
+  flake8 $files
+  if [ $? -ne 0 ]; then
+    echo "❌ flake8 failed. Fix errors before committing."
+    exit 1
+  fi
+fi
+
+# --- JavaScript/TypeScript: ESLint ---
+js_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(js|ts|jsx|tsx)$')
+if [ -n "$js_files" ]; then
+  echo "📜 Linting JS/TS files..."
+  npx eslint $js_files
+  if [ $? -ne 0 ]; then
+    echo "❌ ESLint failed."
+    exit 1
+  fi
+fi
+
+# --- Shell scripts: shellcheck ---
+sh_files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$')
+if [ -n "$sh_files" ]; then
+  echo "🐚 Checking shell scripts..."
+  shellcheck $sh_files || exit 1
+fi
+
+echo "✅ pre-commit passed!"
+exit 0
+```
+
+---
+
+### 2. `prepare-commit-msg` — Auto-prepend Branch Name
+Runs before the commit message editor opens. Injects context into the message.
+
+```bash
+#!/bin/bash
+# hooks/prepare-commit-msg
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Prepend branch name to commit message (skip merges)
+if [ -z "$COMMIT_SOURCE" ]; then
+  BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+  if [ -n "$BRANCH" ]; then
+    sed -i.bak "1s/^/[$BRANCH] /" "$COMMIT_MSG_FILE"
+  fi
+fi
+```
+
+---
+
+### 3. `commit-msg` — Enforce Conventional Commits
+Validates the commit message format.
+
+```bash
+#!/bin/bash
+# hooks/commit-msg
+COMMIT_MSG=$(cat "$1")
+
+# Conventional commits pattern: type(scope): description
+PATTERN="^(feat|fix|docs|style|refactor|test|chore|ci|perf|revert)(\(.+\))?: .{1,72}"
+
+if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+  echo "❌ Invalid commit message format!"
+  echo ""
+  echo "Expected format: type(scope): description"
+  echo "Examples:"
+  echo "  feat(auth): add login endpoint"
+  echo "  fix(api): handle null response"
+  echo "  docs: update README"
+  echo ""
+  echo "Types: feat | fix | docs | style | refactor | test | chore | ci | perf | revert"
+  exit 1
+fi
+
+echo "✅ Commit message is valid."
+exit 0
+```
+
+---
+
+### 4. `post-commit` — Notify After Commit
+Runs after a commit. Cannot abort the commit.
+
+```bash
+#!/bin/bash
+# hooks/post-commit
+BRANCH=$(git symbolic-ref --short HEAD)
+HASH=$(git rev-parse --short HEAD)
+MSG=$(git log -1 --pretty=%B | head -1)
+
+echo ""
+echo "✅ Committed on [$BRANCH]: $HASH — $MSG"
+
+# Optional: send Slack/webhook notification
+# curl -s -X POST -H 'Content-type: application/json' \
+#   --data "{\"text\":\"New commit on $BRANCH: $MSG ($HASH)\"}" \
+#   YOUR_SLACK_WEBHOOK_URL
+```
+
+---
+
+### 5. `pre-push` — Run Tests Before Push
+Runs before `git push`. Exit non-zero to abort.
+
+```bash
+#!/bin/bash
+# hooks/pre-push
+echo "🚀 Running pre-push checks..."
+
+# --- Run Python tests ---
+if [ -f "pytest.ini" ] || [ -f "setup.cfg" ] || [ -d "tests" ]; then
+  echo "🧪 Running pytest..."
+  pytest --tb=short -q
+  if [ $? -ne 0 ]; then
+    echo "❌ Tests failed! Push aborted."
+    exit 1
+  fi
+fi
+
+# --- Run JS tests ---
+if [ -f "package.json" ]; then
+  echo "🧪 Running npm test..."
+  npm test -- --watchAll=false
+  if [ $? -ne 0 ]; then
+    echo "❌ JS tests failed! Push aborted."
+    exit 1
+  fi
+fi
+
+# --- Block push to main/master directly ---
+BRANCH=$(git symbolic-ref --short HEAD)
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "⚠️  Direct push to $BRANCH is not allowed!"
+  echo "   Please create a feature branch and open a PR."
+  exit 1
+fi
+
+echo "✅ pre-push passed!"
+exit 0
+```
+
+---
+
+### 6. `pre-rebase` — Guard Against Risky Rebases
+```bash
+#!/bin/bash
+# hooks/pre-rebase
+UPSTREAM=$1
+BRANCH=$2
+
+# Prevent rebasing main or master
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "❌ Rebasing main/master is not allowed!"
+  exit 1
+fi
+
+echo "✅ Rebase allowed."
+exit 0
+```
+
+---
+
+### 7. `post-merge` — Auto-install Dependencies After Merge
+```bash
+#!/bin/bash
+# hooks/post-merge
+CHANGED=$(git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD)
+
+# Python: reinstall if requirements changed
+if echo "$CHANGED" | grep -q "requirements.*\.txt"; then
+  echo "📦 requirements.txt changed — running pip install..."
+  pip install -r requirements.txt
+fi
+
+# Node: reinstall if package.json changed
+if echo "$CHANGED" | grep -q "package-lock\.json"; then
+  echo "📦 package-lock.json changed — running npm install..."
+  npm install
+fi
+```
+
+---
+
+### 8. `post-checkout` — Setup After Switching Branch
+```bash
+#!/bin/bash
+# hooks/post-checkout
+PREV_HEAD=$1
+NEW_HEAD=$2
+BRANCH_SWITCH=$3
+
+# Only act on branch switches (not file checkouts)
+if [ "$BRANCH_SWITCH" = "1" ]; then
+  BRANCH=$(git symbolic-ref --short HEAD)
+  echo "🌿 Switched to branch: $BRANCH"
+
+  # Auto-install deps if needed
+  if [ -f "package.json" ]; then
+    npm install --silent
+  fi
+fi
+```
+
+---
+
+## 🧩 Hook Cheat Sheet
+
+| Hook | When it runs | Can abort? | Common Use |
+|------|-------------|------------|------------|
+| `pre-commit` | Before commit created | ✅ Yes | Lint, format, secrets scan |
+| `prepare-commit-msg` | Before message editor | ✅ Yes | Inject branch name |
+| `commit-msg` | After message entered | ✅ Yes | Enforce commit format |
+| `post-commit` | After commit created | ❌ No | Notifications |
+| `pre-push` | Before push | ✅ Yes | Run tests, block main push |
+| `pre-rebase` | Before rebase | ✅ Yes | Guard protected branches |
+| `post-merge` | After merge | ❌ No | Install dependencies |
+| `post-checkout` | After checkout | ❌ No | Environment setup |
+
+---
+
+## 🔐 Bonus: Secrets Scanning in `pre-commit`
+
+Add this to your `pre-commit` hook to block accidental credential commits:
+
+```bash
+# Scan for secrets/credentials
+echo "🔐 Scanning for secrets..."
+if git diff --cached | grep -iE "(api_key|secret_key|password|token|aws_access|private_key)\s*=\s*['\"][^'\"]{8,}"; then
+  echo "❌ Potential secret detected! Remove it before committing."
+  exit 1
+fi
+```
+
+---
+
+## 💡 Tips
+
+- Always `chmod +x hooks/<hook-name>` to make hooks executable
+- Use `git commit --no-verify` to skip hooks in emergencies
+- Share hooks with your team via `git config core.hooksPath hooks` (committed to the repo)
+- For complex workflows, consider **Husky** (Node.js) or **pre-commit** (Python) frameworks
+
+---
+
+*Generated for DevOps workflow setup*
 
 ## 📌 Quick Reference Cheatsheet
 
